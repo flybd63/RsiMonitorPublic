@@ -50,7 +50,7 @@ jobs:
           git config user.email github-actions@github.com
           git add .
           git commit -m "generated"
-          git pull --rebase origin main  # リモートの変更を取り込む
+          #git pull --rebase origin main  # リモートの変更を取り込む
           git push
 
 #          echo "Hello GitHub Actions!" > hello.txt
