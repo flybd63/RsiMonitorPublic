@@ -51,7 +51,7 @@ foreach my $t (sort keys %tikers){
     $result{$t}{price} = $prices[-1];
     $result{$t}{end_date} = strftime("%Y-%m-%dT%H:%M:%S", gmtime($last_end_date));
 
-    last;
+    #last;
 }
 
 my $now = DateTime->now(time_zone => 'GMT');
