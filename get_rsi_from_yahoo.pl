@@ -164,19 +164,24 @@ sub calculate_rsi {
     my $n = scalar(@$prices);
     
     my ($gain_sum, $loss_sum) = (0, 0);
+    my $rsi = -1;
 
+    eval{
+        for (my $i = $n-14; $i < $n; $i++) {#直近の14日間だけみる
 
-    for (my $i = $n-14; $i < $n; $i++) {#直近の14日間だけみる
-
-        my $diff = $prices->[$i] - $prices->[$i - 1];
-        if ($diff > 0) {
-            $gain_sum += $diff;
-        } else {
-            $loss_sum += abs($diff);
+            my $diff = $prices->[$i] - $prices->[$i - 1];
+            if ($diff > 0) {
+                $gain_sum += $diff;
+            } else {
+                $loss_sum += abs($diff);
+            }
         }
-    }
 
-    my $rsi = 100 - (100 / (1 + ($gain_sum / $loss_sum)));
+        $rsi = 100 - (100 / (1 + ($gain_sum / $loss_sum)));
+    };
+    if($@){
+        print STDERR "Error: calculate_rsi\n$@";
+    }
     return $rsi;
 }
 
