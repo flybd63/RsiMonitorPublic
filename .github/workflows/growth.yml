@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r yfinance numpy
+          pip install yfinance numpy
       
       - name: Set current datetime as env variable
         env:
