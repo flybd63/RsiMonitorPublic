@@ -6,6 +6,10 @@ import numpy as np
 import sys
 
 def load_mst():
+    # ファイルがない場合のエラーハンドリングを追加
+    if not os.path.exists("tickers.json"):
+        sys.stderr.write("ERROR: tickers.json not found.\n")
+        return {}
     with open("tickers.json", "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -16,41 +20,83 @@ def load_result(date):
             return json.load(f).get("result", {})
     return {}
 
-def save_json(ticker, data):
-    output_path = f"./result/{ticker}.json"
-    tmpfile = output_path + "tmp"
-    with open(tmpfile, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-    os.rename(tmpfile, output_path)
-
 def get_stock_data(symbol):
     try:
         stock = yf.Ticker(symbol)
+        # 6ヶ月分取得
         hist = stock.history(period="6mo", interval="1d")
-        prices = hist["Close"].dropna().tolist()
-        last_end_date = hist.index[-1].strftime("%Y-%m-%dT%H:%M:%S") if len(hist) > 0 else "0"
-        return last_end_date, prices
+        
+        # データがない、または少なすぎる場合のチェック
+        if hist.empty:
+             return "0", [], []
+
+        # NaNを含む行を削除
+        clean_hist = hist[["Close"]].dropna()
+        
+        prices = clean_hist["Close"].tolist()
+        
+        # index(Timestamp)を文字列(YYYY-MM-DD)のリストに変換
+        dates = [d.strftime('%Y-%m-%d') for d in clean_hist.index]
+        
+        last_end_date = clean_hist.index[-1].strftime("%Y-%m-%dT%H:%M:%S") if len(clean_hist) > 0 else "0"
+        
+        return last_end_date, prices, dates
     except Exception as e:
         sys.stderr.write(f"ERROR: {symbol} - {e}\n")
-        return "0", []
+        return "0", [], []
 
-def calculate_rsi(prices, period=14):
+def calculate_rsi_history(prices, dates, period=14):
+    """
+    価格リストと日付リストから、日々のRSI履歴を計算して返す
+    Returns: (最新のRSI, 履歴データのリスト)
+    """
     if len(prices) < period:
-        return None
-    deltas = np.diff(prices)
-    gains = np.where(deltas > 0, deltas, 0)
-    losses = np.where(deltas < 0, -deltas, 0)
-    avg_gain = np.mean(gains[-period:])
-    avg_loss = np.mean(losses[-period:])
-    if avg_loss == 0:
-        return 100
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+        return None, []
+    
+    # numpy配列に変換（計算高速化のため）
+    np_prices = np.array(prices)
+    deltas = np.diff(np_prices)
+    
+    history = []
+    
+    # 期間(14日)以降のデータについて、1日ずつずらしながらRSIを計算
+    # i は「その日の価格」のインデックス
+    for i in range(period, len(prices)):
+        # i番目の日のRSIを計算するために、直近14日分の変動(delta)を取得
+        # deltaのインデックスは priceより1つずれるため、i-period から i まで
+        subset_deltas = deltas[i-period : i]
+        
+        gains = np.where(subset_deltas > 0, subset_deltas, 0)
+        losses = np.where(subset_deltas < 0, -subset_deltas, 0)
+        
+        avg_gain = np.mean(gains)
+        avg_loss = np.mean(losses)
+        
+        if avg_loss == 0:
+            rsi = 100.0
+        else:
+            rs = avg_gain / avg_loss
+            rsi = 100.0 - (100.0 / (1.0 + rs))
+        
+        # JSONシリアライズ用にPythonのfloat型に変換して追加
+        history.append({
+            "d": dates[i],# date
+            "p": round(float(prices[i]), 1), # price
+            "r": round(float(rsi), 1) # rsi
+        })
+
+    # 最新のRSI（リスト表示用）
+    current_rsi = history[-1]['r'] if history else None
+    
+    return current_rsi, history
 
 def main(mode="P"):
     today = datetime.datetime.utcnow().strftime('%Y%m%d')
     tickers = load_mst()
     result = load_result(today)
+    
+    # グラフ用データが増えるため、JSONサイズが大きくなります。
+    # 必要に応じてhistoryの長さを制限（例: history[-60:]）してください。
     
     for count, (ticker, info) in enumerate(tickers.items(), 1):
         if mode == "P" and "プライム" in info["class"]:
@@ -61,22 +107,32 @@ def main(mode="P"):
             pass
         else:
             continue  
+            
         sys.stderr.write(f"{count}/{len(tickers)} t:{ticker} {info['name']} {info['class']}\n")
-        #print(f"{count}/{len(tickers)} t:{ticker} {info['name']} {info['class']}")
+        
         symbol = f"{ticker}.T"
-        last_end_date, prices = get_stock_data(symbol)
+        last_end_date, prices, dates = get_stock_data(symbol)
+        
         if len(prices) < 14:
             sys.stderr.write(f"  - prices too short for RSI calculation: {symbol}\n")
-            #print("  - prices is short. Skipping.")
             continue
-        rsi = calculate_rsi(prices)
-        result[ticker] = {"rsi": rsi, "price": prices[-1], "end_date": last_end_date}
+            
+        # 履歴データを含めてRSIを計算
+        current_rsi, history_data = calculate_rsi_history(prices, dates)
+        
+        if current_rsi is None:
+            continue
+
+        result[ticker] = {
+            "rsi": current_rsi, 
+            "price": prices[-1], 
+            "end_date": last_end_date,
+            "history": history_data[-30:]  # ★ここに追加されました
+        }
     
     now = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S')
-    output = {"date_modified": now, "result": result}
-    sys.stdout.write(json.dumps(output, indent=4, ensure_ascii=False) + "\n")
-    #print(json.dumps(output, indent=4, ensure_ascii=False))
-    #save_json("latest", output)
+    output = {"date_modified": now, "result": result}    
+    sys.stdout.write(json.dumps(output, ensure_ascii=False, separators=(',', ':')) + "\n")
 
 if __name__ == "__main__":
     import sys
