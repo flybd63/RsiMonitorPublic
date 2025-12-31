@@ -24,7 +24,7 @@ def get_stock_data(symbol):
     try:
         stock = yf.Ticker(symbol)
         # 6ヶ月分取得
-        hist = stock.history(period="6mo", interval="1d")
+        hist = stock.history(period="6mo", interval="1d", auto_adjust=False)#auto_adjust=False 配当落の調整を無効にして株価そのものを入れる。
         
         # データがない、または少なすぎる場合のチェック
         if hist.empty:
