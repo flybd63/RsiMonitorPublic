@@ -4,6 +4,22 @@ import datetime
 import os
 import numpy as np
 import sys
+from decimal import Decimal, ROUND_HALF_UP
+
+# ヘルパー関数: 正確な四捨五入を行う
+def round_half_up(number, decimals=1):
+    """
+    数値を指定した桁数で四捨五入(ROUND_HALF_UP)してfloatで返す
+    例: decimals=2 の場合, 50.555 -> 50.56
+    """
+    if number is None:
+        return None
+    # 一度文字列に変換してからDecimalにすることで、浮動小数点の誤差を回避
+    d = Decimal(str(number))
+    # 桁数の指定 (例: '0.01')
+    exp = Decimal("1." + "0" * decimals)
+    # 四捨五入を実行し、JSON保存用にfloatに戻す
+    return float(d.quantize(exp, rounding=ROUND_HALF_UP))
 
 def load_mst():
     # ファイルがない場合のエラーハンドリングを追加
@@ -81,8 +97,8 @@ def calculate_rsi_history(prices, dates, period=14):
         # JSONシリアライズ用にPythonのfloat型に変換して追加
         history.append({
             "d": dates[i],# date
-            "p": round(float(prices[i]), 1), # price
-            "r": round(float(rsi), 1) # rsi
+            "p": round_half_up(float(prices[i]), 1), # price
+            "r": round_half_up(float(rsi), 2) # rsi
         })
 
     # 最新のRSI（リスト表示用）
