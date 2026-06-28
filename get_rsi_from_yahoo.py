@@ -5,6 +5,7 @@ import os
 import numpy as np
 import sys
 from decimal import Decimal, ROUND_HALF_UP
+import concurrent.futures # ★追加: マルチスレッド用
 
 # ヘルパー関数: 正確な四捨五入を行う
 def round_half_up(number, decimals=1):
@@ -106,45 +107,68 @@ def calculate_rsi_history(prices, dates, period=14):
     
     return current_rsi, history
 
+# ★追加: 1銘柄分の処理を関数として独立させる
+def process_single_ticker(ticker, info, mode):
+    # 対象市場のフィルタリング
+    if mode == "P" and "プライム" in info["class"]:
+        pass
+    elif mode == "S" and "スタンダード" in info["class"]:
+        pass
+    elif mode == "G" and "グロース" in info["class"]:
+        pass
+    else:
+        return None # 対象外
+
+    symbol = f"{ticker}.T"
+    last_end_date, prices, dates = get_stock_data(symbol)
+    
+    if len(prices) < 14:
+        sys.stderr.write(f"  - prices too short for RSI calculation: {symbol}\n")
+        return None
+        
+    current_rsi, history_data = calculate_rsi_history(prices, dates)
+    
+    if current_rsi is None:
+        return None
+
+    # 処理が成功した場合、必要なデータをタプルで返す
+    return ticker, {
+        "rsi": current_rsi, 
+        "price": prices[-1], 
+        "end_date": last_end_date,
+        "history": history_data[-30:]
+    }
+
+
 def main(mode="P"):
     today = datetime.datetime.utcnow().strftime('%Y%m%d')
     tickers = load_mst()
     result = load_result(today)
     
-    # グラフ用データが増えるため、JSONサイズが大きくなります。
-    # 必要に応じてhistoryの長さを制限（例: history[-60:]）してください。
-    
-    for count, (ticker, info) in enumerate(tickers.items(), 1):
-        if mode == "P" and "プライム" in info["class"]:
-            pass
-        elif mode == "S" and "スタンダード" in info["class"]:
-            pass
-        elif mode == "G" and "グロース" in info["class"]:
-            pass
-        else:
-            continue  
-            
-        sys.stderr.write(f"{count}/{len(tickers)} t:{ticker} {info['name']} {info['class']}\n")
-        
-        symbol = f"{ticker}.T"
-        last_end_date, prices, dates = get_stock_data(symbol)
-        
-        if len(prices) < 14:
-            sys.stderr.write(f"  - prices too short for RSI calculation: {symbol}\n")
-            continue
-            
-        # 履歴データを含めてRSIを計算
-        current_rsi, history_data = calculate_rsi_history(prices, dates)
-        
-        if current_rsi is None:
-            continue
+    # 処理対象の銘柄だけをリストアップする
+    target_items = [
+        (t, info) for t, info in tickers.items()
+        if (mode == "P" and "プライム" in info["class"]) or
+           (mode == "S" and "スタンダード" in info["class"]) or
+           (mode == "G" and "グロース" in info["class"])
+    ]
+    total = len(target_items)
+    count = 0
 
-        result[ticker] = {
-            "rsi": current_rsi, 
-            "price": prices[-1], 
-            "end_date": last_end_date,
-            "history": history_data[-30:]  # ★ここに追加されました
-        }
+    # ★変更: ThreadPoolExecutorで並行処理を実行する
+    # max_workers=10 は「同時に10銘柄ずつ通信する」設定です。
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        # mapを使うことで、元のJSONの順番（要素の順序）を維持して結果を取得できます
+        results = executor.map(lambda item: process_single_ticker(item[0], item[1], mode), target_items)
+        
+        for res in results:
+            count += 1
+            if res is not None:
+                t, data = res
+                result[t] = data
+                sys.stderr.write(f"{count}/{total} t:{t} completed\n")
+            else:
+                sys.stderr.write(f"{count}/{total} skipped\n")
     
     now = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S')
     output = {"date_modified": now, "result": result}    
