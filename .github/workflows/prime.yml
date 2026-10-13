@@ -26,17 +26,17 @@ jobs:
         env:
           TZ: 'Asia/Tokyo'
         run: echo "CURRENT_DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
-      
+
       - name: Execute Python script
-        run: python get_rsi_from_yahoo.py P > result/latest.json
-      
-      - name: Copy latest.json to date-based file
-        run: cp result/latest.json result/${{env.CURRENT_DATE}}.json
-      
+        run: python get_rsi_from_yahoo.py P
+
       - name: Commit and push changes
         run: |
           git config user.name github-actions
           git config user.email github-actions@github.com
-          git add .
+          git add -A
+          git diff --cached --quiet && exit 0
           git commit -m "generated"
+          git pull --rebase || { git rebase --abort; echo "conflict"; exit 1; }
           git push
+
