@@ -204,9 +204,14 @@ def main(mode="P"):
 
     # ★変更: 実行日時ではなく「取得した株価の最終日付」(最頻値)でファイル名を決める。
     #   取引停止中などで古い日付の銘柄が混ざっても、大多数の日付を採用する。
-    data_date = Counter(
+    # data_date = Counter(
+    #    v["end_date"][:10] for v in fetched.values()
+    # ).most_common(1)[0][0].replace("-", "")
+
+    # 変更後(最新日)
+    data_date = max(
         v["end_date"][:10] for v in fetched.values()
-    ).most_common(1)[0][0].replace("-", "")
+    ).replace("-", "")
 
     # 同じ取引日にすでに保存済みの他市場の結果を引き継ぐ(翌日になっていれば空から始まる)
     result = load_result(data_date)
