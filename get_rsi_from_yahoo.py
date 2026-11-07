@@ -8,10 +8,17 @@ from collections import Counter
 from decimal import Decimal, ROUND_HALF_UP
 import concurrent.futures
 
+try:
+    import jpholiday  # 営業日判定用(pip install jpholiday)
+except ImportError:
+    jpholiday = None  # 無い環境では営業日チェックをスキップする
+
 JST = datetime.timezone(datetime.timedelta(hours=9))
 RESULT_DIR = "./result"
 # 取得できた銘柄がこの割合を下回ったら、Yahoo側の障害等とみなして何も書き出さない
 MIN_SUCCESS_RATIO = 0.5
+# 最新日付の銘柄がこの割合を下回ったら、Yahoo側の更新途中とみなして何も書き出さない
+MIN_FRESH_RATIO = 0.9
 
 
 # ヘルパー関数: 正確な四捨五入を行う
@@ -54,6 +61,37 @@ def write_atomic(path, text):
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
     os.replace(tmp, path)
+
+
+def expected_last_trading_day(now_jst):
+    """
+    今(JST)の時点で、Yahooに最終足として入っているはずの営業日(YYYY-MM-DD)を返す。
+    15:35前は当日の足が未確定なので、前営業日を期待する。
+    jpholiday が使えない場合は None を返す(営業日チェックをスキップ)。
+    """
+    if jpholiday is None:
+        return None
+    d = now_jst.date()
+    if now_jst.time() < datetime.time(15, 35):
+        d -= datetime.timedelta(days=1)
+    # 土日・祝日・年末年始(12/31, 1/2, 1/3)は休場
+    while (d.weekday() >= 5 or jpholiday.is_holiday(d)
+           or (d.month, d.day) in ((12, 31), (1, 2), (1, 3))):
+        d -= datetime.timedelta(days=1)
+    return d.strftime("%Y-%m-%d")
+
+
+def load_latest_date():
+    """latest.json に入っている結果の最頻日付(YYYYMMDD)を返す。無い・壊れている場合は空文字"""
+    path = f"{RESULT_DIR}/latest.json"
+    if not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            res = json.load(f).get("result", {})
+        return Counter(v["end_date"][:10] for v in res.values()).most_common(1)[0][0].replace("-", "")
+    except Exception:
+        return ""
 
 
 def get_stock_data(symbol):
@@ -208,10 +246,24 @@ def main(mode="P"):
     #    v["end_date"][:10] for v in fetched.values()
     # ).most_common(1)[0][0].replace("-", "")
 
-    # 変更後(最新日)
-    data_date = max(
-        v["end_date"][:10] for v in fetched.values()
-    ).replace("-", "")
+    # 最新日付をデータ日付にする。ただし次の場合は書き出さずに異常終了する(後で再実行で取り直す)。
+    #   1) 最新日付の銘柄が少ない = Yahoo側が更新途中(一部の銘柄だけ新しい日付が入っている)
+    #   2) 最新日付が期待される営業日より古い = Yahoo側がまだ当日の足を反映していない
+    end_dates = [v["end_date"][:10] for v in fetched.values()]
+    newest = max(end_dates)
+    n_newest = end_dates.count(newest)
+    if n_newest < len(end_dates) * MIN_FRESH_RATIO:
+        sys.stderr.write(f"ERROR: Yahoo data not settled (newest={newest}: {n_newest}/{len(end_dates)}). Nothing written.\n")
+        sys.exit(1)
+
+    expected = expected_last_trading_day(datetime.datetime.now(JST))
+    if expected is None:
+        sys.stderr.write("WARN: jpholiday not installed. Skipping trading-day check.\n")
+    elif newest < expected:
+        sys.stderr.write(f"ERROR: stale data (newest={newest}, expected={expected}). Nothing written.\n")
+        sys.exit(1)
+
+    data_date = newest.replace("-", "")
 
     # 同じ取引日にすでに保存済みの他市場の結果を引き継ぐ(翌日になっていれば空から始まる)
     result = load_result(data_date)
@@ -223,9 +275,12 @@ def main(mode="P"):
 
     # ★変更: 標準出力ではなくpy内でファイルに書き出す(latest.jsonの読み込み前に空になる問題を避ける)
     os.makedirs(RESULT_DIR, exist_ok=True)
-    write_atomic(f"{RESULT_DIR}/latest.json", text)
     write_atomic(f"{RESULT_DIR}/{data_date}.json", text)
-    sys.stderr.write(f"done: mode={mode} data_date={data_date} fetched={len(fetched)} total_in_file={len(result)}\n")
+    # 古い日付で latest.json を巻き戻さない
+    latest_updated = data_date >= load_latest_date()
+    if latest_updated:
+        write_atomic(f"{RESULT_DIR}/latest.json", text)
+    sys.stderr.write(f"done: mode={mode} data_date={data_date} fetched={len(fetched)} total_in_file={len(result)} latest_updated={latest_updated}\n")
 
 
 if __name__ == "__main__":
