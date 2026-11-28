@@ -6,6 +6,8 @@ import numpy as np
 import sys
 from collections import Counter
 from decimal import Decimal, ROUND_HALF_UP
+import random
+import time
 import concurrent.futures
 
 try:
@@ -19,6 +21,11 @@ RESULT_DIR = "./result"
 MIN_SUCCESS_RATIO = 0.5
 # 最新日付の銘柄がこの割合を下回ったら、Yahoo側の更新途中とみなして何も書き出さない
 MIN_FRESH_RATIO = 0.9
+# レート制限対策: 同時通信数と再試行の設定
+MAX_WORKERS = 5
+RETRY_MAX = 5                    # 1銘柄あたりの最大再試行回数(待ち時間は 5,10,20,40,80秒)
+RETRY_DEADLINE_SEC = 20 * 60     # 起動から20分を過ぎたら再試行しない
+START_TIME = time.time()
 
 
 # ヘルパー関数: 正確な四捨五入を行う
@@ -94,11 +101,38 @@ def load_latest_date():
         return ""
 
 
+def is_rate_limited(e):
+    """Yahooのレート制限(HTTP 429)によるエラーかどうか"""
+    msg = str(e)
+    return (type(e).__name__ == "YFRateLimitError"
+            or "Too Many Requests" in msg or "Rate limited" in msg)
+
+
+def fetch_history(stock, symbol):
+    """
+    stock.history を呼ぶ。レート制限のときは、待ってから再試行する(指数バックオフ+ゆらぎ)。
+    全ワーカーが同時に待つことで、結果的に全体の通信が冷える。
+    起動から RETRY_DEADLINE_SEC を過ぎたら再試行せず、すぐ失敗扱いにする(ジョブが終わらなくなるのを防ぐ)。
+    """
+    for attempt in range(RETRY_MAX + 1):
+        try:
+            # auto_adjust=False 配当落ち調整なしの株価そのものを取得する
+            return stock.history(period="6mo", interval="1d", auto_adjust=False)
+        except Exception as e:
+            within_deadline = (time.time() - START_TIME) < RETRY_DEADLINE_SEC
+            if is_rate_limited(e) and attempt < RETRY_MAX and within_deadline:
+                wait = 5 * (2 ** attempt) + random.uniform(0, 3)
+                sys.stderr.write(f"RATE LIMITED: {symbol} retry {attempt + 1}/{RETRY_MAX} in {wait:.0f}s\n")
+                time.sleep(wait)
+                continue
+            raise
+
+
 def get_stock_data(symbol):
     try:
         stock = yf.Ticker(symbol)
         # 6ヶ月分取得
-        hist = stock.history(period="6mo", interval="1d", auto_adjust=False)  # auto_adjust=False 配当落の調整を無効にして株価そのものを入れる。
+        hist = fetch_history(stock, symbol)  # auto_adjust=False 配当落の調整を無効にして株価そのものを入れる。
 
         # データがない、または少なすぎる場合のチェック
         if hist.empty:
@@ -221,8 +255,8 @@ def main(mode="P"):
     fetched = {}
 
     # ThreadPoolExecutorで並行処理を実行する
-    # max_workers=10 は「同時に10銘柄ずつ通信する」設定です。
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    # max_workers は「同時に何銘柄ずつ通信するか」の設定です(多いとYahooのレート制限に掛かりやすい)。
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         # mapを使うことで、元のJSONの順番（要素の順序）を維持して結果を取得できます
         results = executor.map(lambda item: process_single_ticker(item[0], item[1], mode), target_items)
 
